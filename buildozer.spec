@@ -8,6 +8,8 @@ version = 1.0
 
 requirements = python3,pygame
 
+icon.filename = %(source.dir)s/icon.png
+
 orientation = landscape
 fullscreen = 1
 
