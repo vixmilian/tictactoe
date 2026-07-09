@@ -7,20 +7,16 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build APK with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: stable
+      - name: Build APK using official Buildozer Docker image
+        run: |
+          docker run --rm -v "$(pwd)":/home/user/hostcwd kivy/buildozer android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: tictactoe-apk
-          path: ${{ steps.buildozer.outputs.filename }}
-          
+          path: bin/*.apk
