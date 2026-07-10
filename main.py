@@ -1,51 +1,52 @@
-import pygame
-import sys
+import os
 import random
 
-# ---------------- Global sozlamalar (run() ichida to'ldiriladi) ----------------
-screen = None
-WIDTH = HEIGHT = BOARD_SIZE = CELL_SIZE = LINE_WIDTH = None
-PANEL_X = PANEL_WIDTH = None
-font_big = font_mid = font_small = None
-font_tiny = None
-clock = None
+from kivy.app import App
+from kivy.uix.widget import Widget
+from kivy.graphics import Color, Rectangle, Line
+from kivy.core.window import Window
+from kivy.core.image import Image as CoreImage
+from kivy.core.text import Label as CoreLabel
+from kivy.clock import Clock
+from kivy.resources import resource_find
 
-BG_COLOR = (28, 28, 28)
-PANEL_COLOR = (40, 40, 40)
-LINE_COLOR = (200, 200, 200)
-X_COLOR = (66, 165, 245)
-O_COLOR = (239, 83, 80)
-TEXT_COLOR = (255, 255, 255)
-BTN_COLOR = (80, 80, 80)
-BTN_HOVER = (110, 110, 110)
+# ==================== RANGLAR (0-1 oralig'ida, Kivy formatida) ====================
+BG_COLOR = (28 / 255, 28 / 255, 28 / 255, 1)
+PANEL_COLOR = (40 / 255, 40 / 255, 40 / 255, 1)
+LINE_COLOR = (200 / 255, 200 / 255, 200 / 255, 1)
+X_COLOR = (66 / 255, 165 / 255, 245 / 255, 1)
+O_COLOR = (239 / 255, 83 / 255, 80 / 255, 1)
+TEXT_COLOR = (1, 1, 1, 1)
+DARK_TEXT_COLOR = (20 / 255, 20 / 255, 20 / 255, 1)
+BTN_COLOR = (80 / 255, 80 / 255, 80 / 255, 1)
 
-# ---------------- Holatlar ----------------
+# ==================== HOLATLAR ====================
 STATE_MENU = "menu"
 STATE_MODE_SELECT = "mode_select"
 STATE_SYMBOL_SELECT = "symbol_select"
 STATE_DIFFICULTY_SELECT = "difficulty_select"
 STATE_PLAYING = "playing"
 
-state = STATE_MENU
-mode = None            # "AI" yoki "2P"
-player_symbol = "X"    # foydalanuvchi tanlagan belgi
-difficulty = "hard"    # "easy" / "normal" / "hard"
 
-board = [["" for _ in range(3)] for _ in range(3)]
-current_player = "X"
-game_over = False
-winner = None
+class Rect:
+    """pygame.Rect'ga o'xshash yordamchi klass. Koordinatalar 'yuqoridan-pastga'
+    (top-down) tizimda: x,y - chap yuqori burchak, y pastga qarab o'sadi."""
+
+    def __init__(self, x, y, w, h):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+
+    def contains(self, px, py):
+        return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
+
+    @property
+    def center(self):
+        return (self.x + self.w / 2, self.y + self.h / 2)
 
 
-# ==================== O'YIN MANTIG'I ====================
-def reset_board():
-    global board, current_player, game_over, winner
-    board = [["" for _ in range(3)] for _ in range(3)]
-    current_player = "X"
-    game_over = False
-    winner = None
-
-
+# ==================== O'YIN MANTIG'I (pygame versiyasi bilan bir xil) ====================
 def check_winner(b):
     lines = []
     for i in range(3):
@@ -105,334 +106,480 @@ def find_winning_move(b, sym):
     return None
 
 
-def ai_move():
-    ai_sym = "O" if player_symbol == "X" else "X"
-    human_sym = player_symbol
-    empty = get_empty_cells(board)
-    if not empty:
-        return
+# ==================== ASOSIY WIDGET ====================
+class GameWidget(Widget):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
-    if difficulty == "easy":
-        r, c = random.choice(empty)
-        board[r][c] = ai_sym
-        return
+        self.state = STATE_MENU
+        self.mode = None
+        self.player_symbol = "X"
+        self.difficulty = "hard"
 
-    if difficulty == "normal":
-        move = find_winning_move(board, ai_sym)
-        if move is None:
-            move = find_winning_move(board, human_sym)
-        if move is None:
-            move = random.choice(empty)
-        r, c = move
-        board[r][c] = ai_sym
-        return
+        self.board = [["" for _ in range(3)] for _ in range(3)]
+        self.current_player = "X"
+        self.game_over = False
+        self.winner = None
 
-    # hard: minimax - mag'lub bo'lmaydi
-    best_score = -1000
-    best_move = None
-    for (r, c) in empty:
-        board[r][c] = ai_sym
-        score = minimax(board, 0, False, ai_sym, human_sym)
-        board[r][c] = ""
-        if score > best_score:
-            best_score = score
-            best_move = (r, c)
-    if best_move:
-        r, c = best_move
-        board[r][c] = ai_sym
+        self.rects = {}
+        self.bg_texture = self._load_bg_texture()
 
+        self.bind(size=self.redraw, pos=self.redraw)
+        Clock.schedule_once(lambda dt: self.redraw(), 0)
 
-# ==================== CHIZISH FUNKSIYALARI ====================
-def draw_button(rect, text, mouse_pos, font=None):
-    if font is None:
-        font = font_mid
-    hover = rect.collidepoint(mouse_pos)
-    color = BTN_HOVER if hover else BTN_COLOR
-    pygame.draw.rect(screen, color, rect, border_radius=12)
-    label = font.render(text, True, TEXT_COLOR)
-    screen.blit(label, label.get_rect(center=rect.center))
-    return rect
+    # -------------------- Fon rasm --------------------
+    def _find_bg_file(self):
+        """tictactoebg.png faylini bir nechta ehtimoliy joylardan qidiradi,
+        topilmasa butun xotirani avtomatik skanerlaydi."""
+        here = os.path.dirname(os.path.abspath(__file__))
 
+        direct_candidates = []
+        found = resource_find("tictactoebg.png")
+        if found:
+            direct_candidates.append(found)
 
-def draw_menu(mouse_pos):
-    screen.fill(BG_COLOR)
-    title = font_big.render("Tic-Tac-Toe", True, TEXT_COLOR)
-    screen.blit(title, title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 100)))
-    play_rect = pygame.Rect(WIDTH // 2 - 150, HEIGHT // 2 + 20, 300, 80)
-    draw_button(play_rect, "Play", mouse_pos)
-    return {"play": play_rect}
+        direct_candidates += [
+            os.path.join(here, "tictactoebg.png"),
+            os.path.join(os.getcwd(), "tictactoebg.png"),
+            "tictactoebg.png",
+            "/storage/emulated/0/tictactoebg.png",
+            "/storage/emulated/0/Download/tictactoebg.png",
+            "/storage/emulated/0/Pictures/tictactoebg.png",
+            "/storage/emulated/0/DCIM/tictactoebg.png",
+            "/sdcard/tictactoebg.png",
+            "/sdcard/Download/tictactoebg.png",
+        ]
 
+        for path in direct_candidates:
+            if path and os.path.exists(path):
+                return path
 
-def draw_mode_select(mouse_pos):
-    screen.fill(BG_COLOR)
-    title = font_mid.render("Rejimni tanlang", True, TEXT_COLOR)
-    screen.blit(title, title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 120)))
-
-    ai_rect = pygame.Rect(WIDTH // 2 - 320, HEIGHT // 2, 280, 90)
-    two_p_rect = pygame.Rect(WIDTH // 2 + 40, HEIGHT // 2, 280, 90)
-
-    draw_button(ai_rect, "AI", mouse_pos)
-    draw_button(two_p_rect, "2 O'yinchi", mouse_pos)
-
-    return {"ai": ai_rect, "two_p": two_p_rect}
-
-
-def draw_symbol_select(mouse_pos):
-    screen.fill(BG_COLOR)
-    title = font_mid.render("X bo'lasizmi yoki O?", True, TEXT_COLOR)
-    screen.blit(title, title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 120)))
-
-    x_rect = pygame.Rect(WIDTH // 2 - 320, HEIGHT // 2, 280, 90)
-    o_rect = pygame.Rect(WIDTH // 2 + 40, HEIGHT // 2, 280, 90)
-
-    draw_button(x_rect, "X", mouse_pos, font_big)
-    draw_button(o_rect, "O", mouse_pos, font_big)
-
-    return {"x": x_rect, "o": o_rect}
-
-
-def draw_difficulty_select(mouse_pos):
-    screen.fill(BG_COLOR)
-    title = font_mid.render("Qiyinlik darajasi", True, TEXT_COLOR)
-    screen.blit(title, title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 150)))
-
-    easy_rect = pygame.Rect(WIDTH // 2 - 450, HEIGHT // 2, 280, 90)
-    normal_rect = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2, 280, 90)
-    hard_rect = pygame.Rect(WIDTH // 2 + 170, HEIGHT // 2, 280, 90)
-
-    draw_button(easy_rect, "Easy", mouse_pos)
-    draw_button(normal_rect, "Normal", mouse_pos)
-    draw_button(hard_rect, "Hard", mouse_pos)
-
-    return {"easy": easy_rect, "normal": normal_rect, "hard": hard_rect}
-
-
-def draw_game(mouse_pos):
-    global state
-    screen.fill(BG_COLOR)
-
-    for row in range(1, 3):
-        pygame.draw.line(screen, LINE_COLOR, (0, row * CELL_SIZE), (BOARD_SIZE, row * CELL_SIZE), LINE_WIDTH)
-    for col in range(1, 3):
-        pygame.draw.line(screen, LINE_COLOR, (col * CELL_SIZE, 0), (col * CELL_SIZE, BOARD_SIZE), LINE_WIDTH)
-
-    for row in range(3):
-        for col in range(3):
-            mark = board[row][col]
-            cx = col * CELL_SIZE + CELL_SIZE // 2
-            cy = row * CELL_SIZE + CELL_SIZE // 2
-            if mark == "X":
-                text = font_big.render("X", True, X_COLOR)
-                screen.blit(text, text.get_rect(center=(cx, cy)))
-            elif mark == "O":
-                text = font_big.render("O", True, O_COLOR)
-                screen.blit(text, text.get_rect(center=(cx, cy)))
-
-    pygame.draw.rect(screen, PANEL_COLOR, (PANEL_X, 0, PANEL_WIDTH, HEIGHT))
-
-    rects = {}
-
-    if game_over:
-        if winner == "Draw":
-            status_text = "Durrang!"
-        elif mode == "AI":
-            ai_sym = "O" if player_symbol == "X" else "X"
-            status_text = "AI yutdi!" if winner == ai_sym else "Siz yutdingiz!"
-        else:
-            status_text = f"{winner} yutdi!"
-
-        status = font_small.render(status_text, True, TEXT_COLOR)
-        screen.blit(status, status.get_rect(center=(PANEL_X + PANEL_WIDTH // 2, 150)))
-
-        restart_rect = pygame.Rect(PANEL_X + PANEL_WIDTH // 2 - 130, 300, 260, 70)
-        menu_rect = pygame.Rect(PANEL_X + PANEL_WIDTH // 2 - 130, 400, 260, 70)
-        draw_button(restart_rect, "Restart", mouse_pos)
-        draw_button(menu_rect, "Bosh menyu", mouse_pos)
-        rects["restart"] = restart_rect
-        rects["menu"] = menu_rect
-    else:
-        if mode == "AI":
-            status_text = "Sizning navbatingiz" if current_player == player_symbol else "AI o'ylayapti..."
-        else:
-            status_text = f"Navbat: {current_player}"
-        status = font_small.render(status_text, True, TEXT_COLOR)
-        screen.blit(status, status.get_rect(center=(PANEL_X + PANEL_WIDTH // 2, 150)))
-
-    return rects
-
-
-def get_event_pos(event):
-    if event.type == pygame.FINGERDOWN:
-        return event.x * WIDTH, event.y * HEIGHT
-    return event.pos
-
-
-def draw_footer():
-    """O'ng-pastki burchakda kichik 'Powered by VixMilian' yozuvi."""
-    part1 = font_tiny.render("Powered by ", True, (220, 40, 40))
-    part2 = font_tiny.render("VixMilian", True, (50, 120, 240))
-
-    total_width = part1.get_width() + part2.get_width()
-    x = WIDTH - total_width - 12
-    y = HEIGHT - part1.get_height() - 8
-
-    screen.blit(part1, (x, y))
-    screen.blit(part2, (x + part1.get_width(), y))
-
-
-# ==================== HODISALARNI QAYTA ISHLASH ====================
-def handle_click(x, y, rects):
-    global state, mode, player_symbol, difficulty, current_player, board, game_over, winner
-
-    if state == STATE_MENU:
-        if rects.get("play") and rects["play"].collidepoint(x, y):
-            state = STATE_MODE_SELECT
-
-    elif state == STATE_MODE_SELECT:
-        if rects.get("ai") and rects["ai"].collidepoint(x, y):
-            mode = "AI"
-            state = STATE_SYMBOL_SELECT
-        elif rects.get("two_p") and rects["two_p"].collidepoint(x, y):
-            mode = "2P"
-            state = STATE_SYMBOL_SELECT
-
-    elif state == STATE_SYMBOL_SELECT:
-        if rects.get("x") and rects["x"].collidepoint(x, y):
-            player_symbol = "X"
-            state = STATE_DIFFICULTY_SELECT if mode == "AI" else STATE_PLAYING
-            if mode != "AI":
-                reset_board()
-        elif rects.get("o") and rects["o"].collidepoint(x, y):
-            player_symbol = "O"
-            state = STATE_DIFFICULTY_SELECT if mode == "AI" else STATE_PLAYING
-            if mode != "AI":
-                reset_board()
-
-    elif state == STATE_DIFFICULTY_SELECT:
-        if rects.get("easy") and rects["easy"].collidepoint(x, y):
-            difficulty = "easy"
-            reset_board()
-            state = STATE_PLAYING
-        elif rects.get("normal") and rects["normal"].collidepoint(x, y):
-            difficulty = "normal"
-            reset_board()
-            state = STATE_PLAYING
-        elif rects.get("hard") and rects["hard"].collidepoint(x, y):
-            difficulty = "hard"
-            reset_board()
-            state = STATE_PLAYING
-
-    elif state == STATE_PLAYING:
-        if game_over:
-            if rects.get("restart") and rects["restart"].collidepoint(x, y):
-                player_symbol = "O" if player_symbol == "X" else "X"
-                reset_board()
-            elif rects.get("menu") and rects["menu"].collidepoint(x, y):
-                state = STATE_MENU
-        else:
-            if x < BOARD_SIZE and (mode != "AI" or current_player == player_symbol):
-                col = int(x // CELL_SIZE)
-                row = int(y // CELL_SIZE)
-                if 0 <= row < 3 and 0 <= col < 3 and board[row][col] == "":
-                    board[row][col] = current_player
-                    result = check_winner(board)
-                    if result:
-                        game_over = True
-                        winner = result
-                    else:
-                        current_player = "O" if current_player == "X" else "X"
-
-
-# ==================== ASOSIY ISHGA TUSHIRISH ====================
-def run():
-    global screen, WIDTH, HEIGHT, BOARD_SIZE, CELL_SIZE, LINE_WIDTH
-    global PANEL_X, PANEL_WIDTH, font_big, font_mid, font_small, font_tiny, clock
-    global state, mode, current_player, game_over, winner
-
-    pygame.init()
-
-    # Telefonning haqiqiy ekran o'lchamini avtomatik aniqlaymiz.
-    # RESIZABLE - aylantirilganda o'lcham o'zgarishini ushlab olish uchun.
-    screen = pygame.display.set_mode((0, 0), pygame.RESIZABLE)
-
-    def update_dimensions():
-        """Ekran o'lchamini (aylantirilganda ham) qayta hisoblaydi."""
-        global WIDTH, HEIGHT, BOARD_SIZE, CELL_SIZE, PANEL_X, PANEL_WIDTH
-        current_size = screen.get_size()
-        if current_size != (WIDTH, HEIGHT):
-            WIDTH, HEIGHT = current_size
-            BOARD_SIZE = min(WIDTH, HEIGHT)
-            CELL_SIZE = BOARD_SIZE // 3
-            PANEL_X = BOARD_SIZE
-            PANEL_WIDTH = WIDTH - BOARD_SIZE
-
-    WIDTH, HEIGHT = screen.get_size()
-    BOARD_SIZE = min(WIDTH, HEIGHT)
-    CELL_SIZE = BOARD_SIZE // 3
-    LINE_WIDTH = 6
-    PANEL_X = BOARD_SIZE
-    PANEL_WIDTH = WIDTH - BOARD_SIZE
-
-    pygame.display.set_caption("Tic-Tac-Toe")
-
-    font_big = pygame.font.SysFont(None, 90)
-    font_mid = pygame.font.SysFont(None, 50)
-    font_small = pygame.font.SysFont(None, 36)
-    font_tiny = pygame.font.SysFont(None, 22)
-
-    clock = pygame.time.Clock()
-
-    while True:
-        update_dimensions()  # telefon aylantirilsa, o'lchamlarni yangilaydi
-        mouse_pos = pygame.mouse.get_pos()
-        rects = {}
-
-        if state == STATE_MENU:
-            rects = draw_menu(mouse_pos)
-        elif state == STATE_MODE_SELECT:
-            rects = draw_mode_select(mouse_pos)
-        elif state == STATE_SYMBOL_SELECT:
-            rects = draw_symbol_select(mouse_pos)
-        elif state == STATE_DIFFICULTY_SELECT:
-            rects = draw_difficulty_select(mouse_pos)
-        elif state == STATE_PLAYING:
-            rects = draw_game(mouse_pos)
-
-            if mode == "AI" and current_player != player_symbol and not game_over:
-                pygame.display.flip()
-                pygame.time.wait(400)
-                ai_move()
-                result = check_winner(board)
-                if result:
-                    game_over = True
-                    winner = result
-                else:
-                    current_player = player_symbol
-
-        draw_footer()
-
-        pygame.display.flip()
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-
-            if event.type == pygame.VIDEORESIZE:
-                screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+        # Hech biri topilmasa - keng qidiruv (butun xotirani skanerlash)
+        search_roots = [
+            here,
+            "/storage/emulated/0/Download",
+            "/storage/emulated/0/Android/data",
+            "/storage/emulated/0",
+            "/sdcard",
+        ]
+        for root_dir in search_roots:
+            try:
+                if not os.path.isdir(root_dir):
+                    continue
+                for dirpath, dirnames, filenames in os.walk(root_dir):
+                    if "tictactoebg.png" in filenames:
+                        return os.path.join(dirpath, "tictactoebg.png")
+            except Exception:
                 continue
 
-            is_click = (event.type == pygame.MOUSEBUTTONDOWN) or (event.type == pygame.FINGERDOWN)
-            if not is_click:
-                continue
+        return None
 
-            x, y = get_event_pos(event)
-            handle_click(x, y, rects)
-            pygame.event.clear()  # shu freymdagi qolgan dublikat hodisalarni tashlab yuborish
-            break  # bitta freymda faqat bitta bosish qayta ishlanadi
+    def _load_bg_texture(self):
+        self.bg_load_error = None
+        path = self._find_bg_file()
+        if path is None:
+            self.bg_load_error = "tictactoebg.png hech qayerdan topilmadi"
+            print(self.bg_load_error)
+            return None
+        try:
+            return CoreImage(path).texture
+        except Exception as e:
+            self.bg_load_error = f"{path} -> {e}"
+            print("Fon rasmni yuklab bo'lmadi:", self.bg_load_error)
+            return None
 
-        clock.tick(30)
+    # -------------------- Board / AI mantig'i --------------------
+    def reset_board(self):
+        self.board = [["" for _ in range(3)] for _ in range(3)]
+        self.current_player = "X"
+        self.game_over = False
+        self.winner = None
+
+    def ai_move(self):
+        ai_sym = "O" if self.player_symbol == "X" else "X"
+        human_sym = self.player_symbol
+        empty = get_empty_cells(self.board)
+        if not empty:
+            return
+
+        if self.difficulty == "easy":
+            r, c = random.choice(empty)
+            self.board[r][c] = ai_sym
+            return
+
+        if self.difficulty == "normal":
+            move = find_winning_move(self.board, ai_sym)
+            if move is None:
+                move = find_winning_move(self.board, human_sym)
+            if move is None:
+                move = random.choice(empty)
+            r, c = move
+            self.board[r][c] = ai_sym
+            return
+
+        # hard: minimax - mag'lub bo'lmaydi
+        best_score = -1000
+        best_move = None
+        for (r, c) in empty:
+            self.board[r][c] = ai_sym
+            score = minimax(self.board, 0, False, ai_sym, human_sym)
+            self.board[r][c] = ""
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+        if best_move:
+            r, c = best_move
+            self.board[r][c] = ai_sym
+
+    def schedule_ai_if_needed(self):
+        if (self.state == STATE_PLAYING and self.mode == "AI"
+                and not self.game_over and self.current_player != self.player_symbol):
+            Clock.schedule_once(self._do_ai_move, 0.4)
+
+    def _do_ai_move(self, dt):
+        self.ai_move()
+        result = check_winner(self.board)
+        if result:
+            self.game_over = True
+            self.winner = result
+        else:
+            self.current_player = self.player_symbol
+        self.redraw()
+
+    # -------------------- Teginish (touch) hodisalari --------------------
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+        # Kivy'ning pastdan-yuqoriga y sistemasini pygame uslubidagi
+        # yuqoridan-pastga (top-down) sistemaga o'giramiz.
+        x = touch.x - self.x
+        y = self.height - (touch.y - self.y)
+        self.handle_click(x, y)
+        return True
+
+    def handle_click(self, x, y):
+        if self.state == STATE_MENU:
+            if "play" in self.rects and self.rects["play"].contains(x, y):
+                self.state = STATE_MODE_SELECT
+            elif "exit" in self.rects and self.rects["exit"].contains(x, y):
+                App.get_running_app().stop()
+                return
+
+        elif self.state == STATE_MODE_SELECT:
+            if "ai" in self.rects and self.rects["ai"].contains(x, y):
+                self.mode = "AI"
+                self.state = STATE_SYMBOL_SELECT
+            elif "two_p" in self.rects and self.rects["two_p"].contains(x, y):
+                self.mode = "2P"
+                self.state = STATE_SYMBOL_SELECT
+            elif "back" in self.rects and self.rects["back"].contains(x, y):
+                self.state = STATE_MENU
+
+        elif self.state == STATE_SYMBOL_SELECT:
+            if "x" in self.rects and self.rects["x"].contains(x, y):
+                self.player_symbol = "X"
+                self.state = STATE_DIFFICULTY_SELECT if self.mode == "AI" else STATE_PLAYING
+                if self.mode != "AI":
+                    self.reset_board()
+            elif "o" in self.rects and self.rects["o"].contains(x, y):
+                self.player_symbol = "O"
+                self.state = STATE_DIFFICULTY_SELECT if self.mode == "AI" else STATE_PLAYING
+                if self.mode != "AI":
+                    self.reset_board()
+            elif "back" in self.rects and self.rects["back"].contains(x, y):
+                self.state = STATE_MODE_SELECT
+
+        elif self.state == STATE_DIFFICULTY_SELECT:
+            handled = False
+            for key in ("easy", "normal", "hard"):
+                if key in self.rects and self.rects[key].contains(x, y):
+                    self.difficulty = key
+                    self.reset_board()
+                    self.state = STATE_PLAYING
+                    handled = True
+            if not handled and "back" in self.rects and self.rects["back"].contains(x, y):
+                self.state = STATE_SYMBOL_SELECT
+
+        elif self.state == STATE_PLAYING:
+            if self.game_over:
+                if "restart" in self.rects and self.rects["restart"].contains(x, y):
+                    self.player_symbol = "O" if self.player_symbol == "X" else "X"
+                    self.reset_board()
+                elif "menu" in self.rects and self.rects["menu"].contains(x, y):
+                    self.state = STATE_MENU
+            else:
+                board_size = min(self.width, self.height)
+                if x < board_size and y < board_size and (
+                        self.mode != "AI" or self.current_player == self.player_symbol):
+                    cell = board_size // 3
+                    col = int(x // cell)
+                    row = int(y // cell)
+                    if 0 <= row < 3 and 0 <= col < 3 and self.board[row][col] == "":
+                        self.board[row][col] = self.current_player
+                        result = check_winner(self.board)
+                        if result:
+                            self.game_over = True
+                            self.winner = result
+                        else:
+                            self.current_player = "O" if self.current_player == "X" else "X"
+
+        self.redraw()
+        self.schedule_ai_if_needed()
+
+    # -------------------- Chizish yordamchilari --------------------
+    def _to_kivy_pos(self, td_x, td_y, w, h):
+        """Top-down (x,y,w,h) ni Kivy'ning pastdan-yuqoriga pos'iga o'giradi."""
+        kx = self.x + td_x
+        ky = self.y + (self.height - td_y - h)
+        return kx, ky
+
+    def draw_label(self, text, cx_td, cy_td, color, font_size=32, bold=True):
+        label = CoreLabel(text=text, font_size=font_size, color=color, bold=bold)
+        label.refresh()
+        texture = label.texture
+        tw, th = texture.size
+        kx, ky = self._to_kivy_pos(cx_td - tw / 2, cy_td - th / 2, tw, th)
+        Color(1, 1, 1, 1)
+        Rectangle(texture=texture, pos=(kx, ky), size=(tw, th))
+
+    def draw_button(self, rect, text, font_size=32):
+        kx, ky = self._to_kivy_pos(rect.x, rect.y, rect.w, rect.h)
+        Color(*BTN_COLOR)
+        Rectangle(pos=(kx, ky), size=(rect.w, rect.h))
+        cx, cy = rect.center
+        self.draw_label(text, cx, cy, TEXT_COLOR, font_size)
+
+    def layout_row_buttons(self, count, y_td, btn_h=90, max_btn_w=280):
+        w = self.width
+        btn_w = min(max_btn_w, (w - 40) / count - 20)
+        gap = btn_w * 0.3
+        total_w = count * btn_w + (count - 1) * gap
+        start_x = w / 2 - total_w / 2
+        rects = []
+        for i in range(count):
+            rx = start_x + i * (btn_w + gap)
+            rects.append(Rect(rx, y_td, btn_w, btn_h))
+        return rects
+
+    def draw_back_button(self):
+        w, h = self.width, self.height
+        btn_w, btn_h = 130, 60
+        margin = 20
+        rect = Rect(w - btn_w - margin, h - btn_h - margin, btn_w, btn_h)
+        self.draw_button(rect, "Orqaga", font_size=22)
+        self.rects["back"] = rect
+
+    # -------------------- Ekranlar --------------------
+    def draw_menu(self):
+        w, h = self.width, self.height
+        if self.bg_texture is not None:
+            Color(1, 1, 1, 1)
+            Rectangle(texture=self.bg_texture, pos=(self.x, self.y), size=(w, h))
+            title_color = DARK_TEXT_COLOR
+        else:
+            Color(*BG_COLOR)
+            Rectangle(pos=(self.x, self.y), size=(w, h))
+            title_color = TEXT_COLOR
+            if self.bg_load_error:
+                err_text = str(self.bg_load_error)
+                lines = [err_text[i:i + 45] for i in range(0, len(err_text), 45)]
+                for i, line in enumerate(lines[:5]):
+                    self._draw_debug_line(line, 10, 10 + i * 24)
+
+        self.draw_label("Tic-Tac-Toe", w / 2, h / 2 - 100, title_color, 60)
+
+        play_rect = Rect(w / 2 - 150, h / 2 + 20, 300, 80)
+        self.draw_button(play_rect, "Play")
+        self.rects["play"] = play_rect
+
+        exit_rect = Rect(w / 2 - 150, h / 2 + 120, 300, 80)
+        self.draw_button(exit_rect, "Exit")
+        self.rects["exit"] = exit_rect
+
+    def _draw_debug_line(self, text, x_td, y_td):
+        label = CoreLabel(text=text, font_size=14, color=(1, 90 / 255, 90 / 255, 1))
+        label.refresh()
+        texture = label.texture
+        kx, ky = self._to_kivy_pos(x_td, y_td, texture.size[0], texture.size[1])
+        Color(1, 1, 1, 1)
+        Rectangle(texture=texture, pos=(kx, ky), size=texture.size)
+
+    def draw_mode_select(self):
+        w, h = self.width, self.height
+        if self.bg_texture is not None:
+            Color(1, 1, 1, 1)
+            Rectangle(texture=self.bg_texture, pos=(self.x, self.y), size=(w, h))
+            text_color = DARK_TEXT_COLOR
+        else:
+            Color(*BG_COLOR)
+            Rectangle(pos=(self.x, self.y), size=(w, h))
+            text_color = TEXT_COLOR
+
+        self.draw_label("Rejimni tanlang", w / 2, h / 2 - 120, text_color, 36)
+
+        ai_rect, two_p_rect = self.layout_row_buttons(2, h / 2, btn_h=90, max_btn_w=280)
+        self.draw_button(ai_rect, "AI")
+        self.draw_button(two_p_rect, "2 O'yinchi", font_size=26)
+        self.rects["ai"] = ai_rect
+        self.rects["two_p"] = two_p_rect
+        self.draw_back_button()
+
+    def draw_symbol_select(self):
+        w, h = self.width, self.height
+        if self.bg_texture is not None:
+            Color(1, 1, 1, 1)
+            Rectangle(texture=self.bg_texture, pos=(self.x, self.y), size=(w, h))
+            text_color = DARK_TEXT_COLOR
+        else:
+            Color(*BG_COLOR)
+            Rectangle(pos=(self.x, self.y), size=(w, h))
+            text_color = TEXT_COLOR
+
+        self.draw_label("X bo'lasizmi yoki O?", w / 2, h / 2 - 120, text_color, 36)
+
+        x_rect, o_rect = self.layout_row_buttons(2, h / 2, btn_h=90, max_btn_w=280)
+        self.draw_button(x_rect, "X", font_size=48)
+        self.draw_button(o_rect, "O", font_size=48)
+        self.rects["x"] = x_rect
+        self.rects["o"] = o_rect
+        self.draw_back_button()
+
+    def draw_difficulty_select(self):
+        w, h = self.width, self.height
+        if self.bg_texture is not None:
+            Color(1, 1, 1, 1)
+            Rectangle(texture=self.bg_texture, pos=(self.x, self.y), size=(w, h))
+            text_color = DARK_TEXT_COLOR
+        else:
+            Color(*BG_COLOR)
+            Rectangle(pos=(self.x, self.y), size=(w, h))
+            text_color = TEXT_COLOR
+
+        self.draw_label("Qiyinlik darajasi", w / 2, h / 2 - 150, text_color, 36)
+
+        easy_rect, normal_rect, hard_rect = self.layout_row_buttons(3, h / 2, btn_h=90, max_btn_w=220)
+        self.draw_button(easy_rect, "Easy", font_size=26)
+        self.draw_button(normal_rect, "Normal", font_size=26)
+        self.draw_button(hard_rect, "Hard", font_size=26)
+        self.rects["easy"] = easy_rect
+        self.rects["normal"] = normal_rect
+        self.rects["hard"] = hard_rect
+        self.draw_back_button()
+
+    def draw_game(self):
+        w, h = self.width, self.height
+        Color(*BG_COLOR)
+        Rectangle(pos=(self.x, self.y), size=(w, h))
+
+        board_size = min(w, h)
+        cell = board_size // 3
+        is_portrait = h >= w
+
+        if is_portrait:
+            panel_rect = Rect(0, board_size, w, h - board_size)
+        else:
+            panel_rect = Rect(board_size, 0, w - board_size, h)
+
+        # --- Katakcha chiziqlari ---
+        Color(*LINE_COLOR)
+        top_ky = self.y + h
+        board_bottom_ky = self.y + h - board_size
+        for row in range(1, 3):
+            y_td = row * cell
+            ky = self.y + h - y_td
+            Line(points=[self.x, ky, self.x + board_size, ky], width=3)
+        for col in range(1, 3):
+            x_td = col * cell
+            kx = self.x + x_td
+            Line(points=[kx, top_ky, kx, board_bottom_ky], width=3)
+
+        # --- X / O belgilar ---
+        for row in range(3):
+            for col in range(3):
+                mark = self.board[row][col]
+                if mark == "":
+                    continue
+                cx = col * cell + cell / 2
+                cy = row * cell + cell / 2
+                color = X_COLOR if mark == "X" else O_COLOR
+                self.draw_label(mark, cx, cy, color, int(cell * 0.55))
+
+        # --- Panel foni ---
+        pkx, pky = self._to_kivy_pos(panel_rect.x, panel_rect.y, panel_rect.w, panel_rect.h)
+        Color(*PANEL_COLOR)
+        Rectangle(pos=(pkx, pky), size=(panel_rect.w, panel_rect.h))
+
+        panel_cx = panel_rect.x + panel_rect.w / 2
+
+        if self.game_over:
+            if self.winner == "Draw":
+                status_text = "Durrang!"
+            elif self.mode == "AI":
+                ai_sym = "O" if self.player_symbol == "X" else "X"
+                status_text = "AI yutdi!" if self.winner == ai_sym else "Siz yutdingiz!"
+            else:
+                status_text = f"{self.winner} yutdi!"
+
+            self.draw_label(status_text, panel_cx, panel_rect.y + panel_rect.h * 0.22, TEXT_COLOR, 30)
+
+            btn_w = min(260, panel_rect.w * 0.85)
+            btn_h = min(70, max(50, panel_rect.h * 0.22))
+            restart_rect = Rect(panel_cx - btn_w / 2, panel_rect.y + panel_rect.h * 0.42, btn_w, btn_h)
+            menu_rect = Rect(panel_cx - btn_w / 2, panel_rect.y + panel_rect.h * 0.70, btn_w, btn_h)
+            self.draw_button(restart_rect, "Restart", font_size=26)
+            self.draw_button(menu_rect, "Bosh menyu", font_size=24)
+            self.rects["restart"] = restart_rect
+            self.rects["menu"] = menu_rect
+        else:
+            if self.mode == "AI":
+                status_text = "Sizning navbatingiz" if self.current_player == self.player_symbol else "AI o'ylayapti..."
+            else:
+                status_text = f"Navbat: {self.current_player}"
+            self.draw_label(status_text, panel_cx, panel_rect.y + panel_rect.h / 2, TEXT_COLOR, 26)
+
+    def draw_footer(self):
+        label1 = CoreLabel(text="Powered by ", font_size=16, color=(220 / 255, 40 / 255, 40 / 255, 1))
+        label1.refresh()
+        tex1 = label1.texture
+        label2 = CoreLabel(text="VixMilian", font_size=16, color=(50 / 255, 120 / 255, 240 / 255, 1))
+        label2.refresh()
+        tex2 = label2.texture
+
+        total_w = tex1.size[0] + tex2.size[0]
+        kx = self.x + self.width - total_w - 12
+        ky = self.y + 8
+
+        Color(1, 1, 1, 1)
+        Rectangle(texture=tex1, pos=(kx, ky), size=tex1.size)
+        Rectangle(texture=tex2, pos=(kx + tex1.size[0], ky), size=tex2.size)
+
+    # -------------------- Qayta chizish --------------------
+    def redraw(self, *args):
+        if self.width <= 1 or self.height <= 1:
+            return
+        self.rects = {}
+        self.canvas.clear()
+        with self.canvas:
+            if self.state == STATE_MENU:
+                self.draw_menu()
+            elif self.state == STATE_MODE_SELECT:
+                self.draw_mode_select()
+            elif self.state == STATE_SYMBOL_SELECT:
+                self.draw_symbol_select()
+            elif self.state == STATE_DIFFICULTY_SELECT:
+                self.draw_difficulty_select()
+            elif self.state == STATE_PLAYING:
+                self.draw_game()
+            self.draw_footer()
+
+
+class TicTacToeApp(App):
+    title = "Tic-Tac-Toe"
+
+    def build(self):
+        Window.clearcolor = BG_COLOR
+        return GameWidget()
 
 
 if __name__ == "__main__":
-    run()
+    TicTacToeApp().run()
